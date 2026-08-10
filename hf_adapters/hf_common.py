@@ -33,6 +33,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sympy import factorint
+from torch.compiler import nested_compile_region
 from transformers import GenerationConfig
 from transformers.generation import GenerateDecoderOnlyOutput
 
@@ -2579,6 +2580,40 @@ def prepare_standard_gqa_blocks(layers, is_res_mul: bool | None = None):
         block = StandardGQABlock(layer, is_res_mul)
         layers[i] = block
         blocks.append(block)
+    return blocks
+
+
+def nested_region_block(block):
+    """Wrap a block's ``forward`` in a nested compile region.
+
+    Unlike ``make_standard_gqa_block`` (which ``torch.compile``s each block on
+    its own), this returns a region callable so that when an *outer* forward is
+    compiled, Dynamo compiles this block once and emits one ``invoke_subgraph``
+    call per layer instead of inlining N copies. Compile-once across the N
+    layers is what keeps compile time flat for the whole-forward graph.
+    """
+    # Wrap in a plain function (not the bound method) so nested_compile_region
+    # has a module-free callable to key on. Args are forwarded positionally so
+    # this stays correct as StandardGQABlock.forward's signature evolves.
+    @nested_compile_region
+    def forward(*args):
+        return block.forward(*args)
+
+    return forward
+
+
+def prepare_standard_gqa_region_blocks(layers, is_res_mul=None):
+    """Register decoder layers as Spyre blocks and wrap each in a compile region.
+
+    Mirrors ``prepare_standard_gqa_blocks`` but returns region-wrapped callables
+    (not ``torch.compile``d), for use inside a single whole-forward
+    ``torch.compile`` graph.
+    """
+    blocks = []
+    for i, layer in enumerate(list(layers)):
+        block = StandardGQABlock(layer, is_res_mul)
+        layers[i] = block
+        blocks.append(nested_region_block(block))
     return blocks
 
 
