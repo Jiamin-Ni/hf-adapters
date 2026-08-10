@@ -310,17 +310,42 @@ def dtype_for_model_path(
 def _resolve_run_forward_fn(model, eager_run_forward):
     """Prefer the compiled whole-forward on ``model`` over the eager function.
 
-    generate() calls run_forward_fn(model, input_ids, ...). model._spyre_run_forward
-    closes over model and omits that leading arg, so wrap it in a shim that drops
-    the first positional (model) and forwards the rest. Falls back to the eager
-    _run_forward when no compiled forward is attached (non-hierarchical adapters).
+    generate() calls
+    ``run_forward_fn(model, input_ids, position_ids, attn_mask, key_caches,
+    value_caches, cache_index=...)``.
+
+    The compiled ``model._spyre_run_forward`` closes over ``model`` and consumes
+    ``selected_freqs`` (already gathered on the host) in place of ``position_ids`` —
+    the RoPE gather is intrinsically host-side and must not be traced into the
+    compiled graph. So the shim performs the host gather via ``model._spyre_rope``
+    and passes the resulting freqs tensor to the compiled forward. This mirrors
+    foundation-model-stack's ``eager_spyre`` generate loop.
+
+    Falls back to the eager ``_run_forward`` (position_ids based) when no compiled
+    forward is attached (non-hierarchical adapters).
     """
     compiled = getattr(model, "_spyre_run_forward", None)
     if compiled is None:
         return eager_run_forward
 
-    def run_forward_fn(_model, *args, **kwargs):
-        return compiled(*args, **kwargs)
+    def run_forward_fn(
+        _model,
+        input_ids,
+        position_ids,
+        attn_mask,
+        key_caches,
+        value_caches,
+        cache_index,
+    ):
+        selected_freqs = _model._spyre_rope(input_ids, position_ids)
+        return compiled(
+            input_ids,
+            selected_freqs,
+            attn_mask,
+            key_caches,
+            value_caches,
+            cache_index,
+        )
 
     return run_forward_fn
 

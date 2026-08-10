@@ -7,12 +7,14 @@ def test_nested_region_block_wraps_forward():
     from hf_adapters.hf_common import nested_region_block
 
     class Dummy(nn.Module):
-        def forward(self, h, freqs, mask, kc, vc, is_filling, ti, cp):
+        def forward(self, h, freqs, mask, kc, vc, cache_index):
             return h + 1.0, kc, vc
 
     wrapped = nested_region_block(Dummy())
     h = torch.zeros(1, 4, 8)
-    out, kc, vc = wrapped(h, None, None, torch.zeros(1), torch.zeros(1), False, 0, 0)
+    # The wrapper drops the block's (key_cache, value_cache) return and exposes
+    # only h, so invoke_subgraph sees no input-aliasing output.
+    out = wrapped(h, None, None, torch.zeros(1), torch.zeros(1), 0)
     assert torch.allclose(out, h + 1.0)
 
 
