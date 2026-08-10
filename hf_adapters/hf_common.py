@@ -2592,14 +2592,13 @@ def nested_region_block(block):
     call per layer instead of inlining N copies. Compile-once across the N
     layers is what keeps compile time flat for the whole-forward graph.
     """
-    # Wrap in a plain function (not the bound method) so nested_compile_region
-    # has a module-free callable to key on. Args are forwarded positionally so
-    # this stays correct as StandardGQABlock.forward's signature evolves.
-    @nested_compile_region
-    def forward(*args):
-        return block.forward(*args)
+    # PyTorch cannot mark a bound method directly, so wrap it in a plain
+    # function. Args are forwarded through so this stays correct as
+    # StandardGQABlock.forward's signature evolves.
+    def wrapper(*args, **kwargs):
+        return block.forward(*args, **kwargs)
 
-    return forward
+    return nested_compile_region(wrapper)
 
 
 def prepare_standard_gqa_region_blocks(layers, is_res_mul=None):
