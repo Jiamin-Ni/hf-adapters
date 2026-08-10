@@ -34,7 +34,7 @@ from hf_adapters.hf_common import (
     get_backbone,
     pad_lm_head,
     prepare_rope_and_heads,
-    prepare_standard_gqa_blocks,
+    prepare_standard_gqa_region_blocks,
     text_config,
 )
 
@@ -92,11 +92,43 @@ def _run_forward(
     return logits / text_config(model.config).logits_scaling
 
 
+def _make_compiled_run_forward(model):
+    """Bind Granite's whole-forward to ``model`` and torch.compile it once.
+
+    The compiled callable owns the embed/mul/rope prologue, the decoder-block
+    loop (each block a nested_compile_region → compiled once), and the
+    norm/head/scaling epilogue. Signature matches generate()'s run_forward_fn
+    contract minus the leading ``model`` (which is closed over).
+    """
+    def _bound(
+        input_ids,
+        position_ids,
+        attn_mask,
+        key_caches,
+        value_caches,
+        cache_index,
+    ):
+        return _run_forward(
+            model,
+            input_ids,
+            position_ids,
+            attn_mask,
+            key_caches,
+            value_caches,
+            cache_index,
+        )
+
+    return torch.compile(_bound, dynamic=False)
+
+
 def prepare_for_spyre(model):
     """Apply Spyre adaptations to Granite 3.3 model in-place."""
     prepare_rope_and_heads(model)
     pad_lm_head(model)
     backbone = get_backbone(model)
-    model._spyre_compiled_blocks = prepare_standard_gqa_blocks(backbone.layers, True)
+    model._spyre_compiled_blocks = prepare_standard_gqa_region_blocks(
+        backbone.layers, True
+    )
     model._spyre_compiled_norm = torch.compile(backbone.norm, dynamic=False)
     model._spyre_prefill_chunk_size = _SDPA_MAX_SEQUENCE_TILE_SIZE
+    model._spyre_run_forward = _make_compiled_run_forward(model)
