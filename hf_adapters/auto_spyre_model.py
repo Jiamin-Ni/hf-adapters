@@ -79,6 +79,7 @@ from transformers import (
     MPNetConfig,
     Olmo2Config,
     OlmoConfig,
+    OlmoeConfig,
     OPTConfig,
     Phi3Config,
     PreTrainedModel,
@@ -130,6 +131,7 @@ from hf_adapters import (
     hf_mpnet,
     hf_olmo,
     hf_olmo2,
+    hf_olmoe,
     hf_opt,
     hf_phi3,
     hf_qwen2,
@@ -173,6 +175,7 @@ CONFIG_TO_ADAPTER_MODULE_MAPPING: dict[type[PretrainedConfig], ModuleType] = {
     MPNetConfig: hf_mpnet,
     OlmoConfig: hf_olmo,
     Olmo2Config: hf_olmo2,
+    OlmoeConfig: hf_olmoe,
     OPTConfig: hf_opt,
     Phi3Config: hf_phi3,
     Qwen2Config: hf_qwen2,
@@ -204,6 +207,7 @@ ARCH_TO_ADAPTER_MODULE_MAPPING: dict[str, ModuleType] = {
 IMAGE_TEXT_TO_TEXT_CONFIG_TO_ADAPTER_MODULE_MAPPING: dict[
     type[PretrainedConfig], ModuleType
 ] = {
+    Gemma4Config: hf_gemma4_mm,
     Gemma4UnifiedConfig: hf_gemma4_mm,
     Granite4VisionConfig: hf_granite_vision_mm,
     Mistral3Config: hf_mistral3_vision_mm,
@@ -283,8 +287,14 @@ def _autoconfig_with_subfolder_fallback(
 def dtype_for_model_path(
     model_name_or_path: Union[str, os.PathLike[str]],
     target_device: str | torch.device,
+    trust_remote_code: bool | None = None,
 ) -> torch.dtype:
     """Resolve one concrete dtype before loading a model."""
+    # trust_remote_code is forwarded to AutoConfig.from_pretrained only when the
+    # dtype has to be read from the config (no explicit policy). Checkpoints that
+    # ship custom config code otherwise block on an interactive opt-in prompt
+    # here, before the load ever reaches from_pretrained.
+
     device_str = (
         target_device.type
         if isinstance(target_device, torch.device)
@@ -296,7 +306,9 @@ def dtype_for_model_path(
     elif policy.dtype is not None:
         dtype = policy.dtype
     else:
-        config = _autoconfig_with_subfolder_fallback(model_name_or_path)
+        config = _autoconfig_with_subfolder_fallback(
+            model_name_or_path, trust_remote_code=trust_remote_code
+        )
         dtype = (
             getattr(config, "dtype", None) or torch.float16 if config else torch.float16
         )
@@ -418,6 +430,7 @@ class AutoSpyreModel:
             dtype = dtype_for_model_path(
                 model_name_or_path,
                 target_device=hf_common.DEVICE,
+                trust_remote_code=trust_remote_code,
             )
 
         model: PreTrainedModel = load_model_common(
@@ -890,6 +903,7 @@ def _run_vlm_text_forward(
         key_caches,
         value_caches,
         cache_index,
+        input_ids=input_ids,
     )
 
 
