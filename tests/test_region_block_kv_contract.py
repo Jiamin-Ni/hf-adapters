@@ -6,7 +6,6 @@ the region wrapper must NOT return the KV cache buffers it received — it relie
 on in-place mutation instead. The underlying StandardGQABlock keeps its 3-tuple
 return for eager (non-region) adapters.
 """
-import types
 
 
 def test_region_wrapper_returns_only_h_and_mutates_kv_in_place():
@@ -15,8 +14,9 @@ def test_region_wrapper_returns_only_h_and_mutates_kv_in_place():
     calls = {}
 
     class FakeBlock:
-        # Mimics StandardGQABlock: mutates the caches in place, returns 3-tuple.
-        def forward(self, h, selected_freqs, attn_mask, kc, vc, cache_index):
+        # Mimics StandardGQABlock.region_forward (the method the region
+        # dispatches to): mutates the caches in place, returns a 3-tuple.
+        def region_forward(self, h, selected_freqs, attn_mask, kc, vc, cache_index):
             calls["kc_id"] = id(kc)
             calls["vc_id"] = id(vc)
             kc["written"] = True  # in-place mutation of the passed buffer
@@ -44,13 +44,14 @@ def test_standard_gqa_block_still_returns_three_tuple_for_eager_callers():
     (olmo, granite_vision_mm, mistral3_vision_mm, standard_gqa_backbone_forward)
     still unpack ``h, key_cache, value_cache``."""
     import inspect
+
     import hf_adapters.hf_common as c
 
     src = inspect.getsource(c.StandardGQABlock.forward)
-    assert "return h, key_cache, value_cache" in src, (
-        "StandardGQABlock must keep its 3-tuple return for eager callers"
-    )
+    assert (
+        "return h, key_cache, value_cache" in src
+    ), "StandardGQABlock must keep its 3-tuple return for eager callers"
     attn_src = inspect.getsource(c.StandardGQAAttention.forward)
-    assert "key_cache, value_cache" in attn_src.rsplit("return", 1)[-1], (
-        "StandardGQAAttention must keep its 3-tuple return for eager callers"
-    )
+    assert (
+        "key_cache, value_cache" in attn_src.rsplit("return", 1)[-1]
+    ), "StandardGQAAttention must keep its 3-tuple return for eager callers"

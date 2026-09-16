@@ -1631,9 +1631,22 @@ def load_model_common(
     return model
 
 
-def move_model_to_spyre(model, module, dtype: torch.dtype) -> None:
+def move_model_to_spyre(
+    model, module, dtype: torch.dtype, *, hier_compile: bool = False
+) -> None:
+    """Prepare ``model`` for Spyre via its adapter and move it to the device.
+
+    ``hier_compile`` is an experimental opt-in understood only by
+    ``hf_granite.prepare_for_spyre``; see that function's docstring. The kwarg is
+    forwarded ONLY when True, because every other adapter's ``prepare_for_spyre``
+    takes ``(model)`` alone and would raise TypeError on an unexpected keyword.
+    Do not collapse this into an unconditional pass-through.
+    """
     untie_embedding_and_lm_head(model)
-    module.prepare_for_spyre(model)
+    if hier_compile:
+        module.prepare_for_spyre(model, hier_compile=True)
+    else:
+        module.prepare_for_spyre(model)
     _move_to_spyre_with_layout(model, dtype)
     for submod_name in getattr(model, "_spyre_cpu_submodules", []):
         model.get_submodule(submod_name).to("cpu")
@@ -2563,6 +2576,38 @@ class StandardGQABlock(nn.Module):
             )
         return h, key_cache, value_cache
 
+    def region_forward(
+        self,
+        hidden_states,
+        selected_freqs,
+        attn_mask,
+        key_cache,
+        value_cache,
+        cache_index,
+    ):
+        """``forward`` minus the eager dim-naming, for the whole-forward path.
+
+        Called only from ``_shared_region_block``. Inside a
+        ``nested_compile_region`` there is no eager boundary between
+        ``_pre_attn`` and ``_attention_tail`` — the surrounding whole-forward
+        ``torch.compile`` traces straight through both inner compiles — so
+        ``_named_standard_gqa_attention_inputs`` has no following *separate*
+        compilation to annotate and would only force a graph break. Its
+        ``named_dims`` declare/reset calls are host-side global side effects
+        that carry no meaning under tracing anyway.
+
+        Kept as a sibling of ``forward`` rather than a flag on it so the eager
+        adapters (olmo, granite_vision_mm, mistral3_vision_mm) keep the
+        dim-naming contract untouched, and so a future accidental nesting of
+        ``forward`` under an outer compile still fails loudly (graph break)
+        instead of silently dropping the annotations.
+        """
+        q, key_cache, value_cache = self._pre_attn(
+            hidden_states, selected_freqs, key_cache, value_cache, cache_index
+        )
+        h = self._attention_tail(hidden_states, q, key_cache, value_cache, attn_mask)
+        return h, key_cache, value_cache
+
 
 def make_standard_gqa_block(layer, is_res_mul: bool | None = None):
     """Build one standard GQA block; its two regions are compiled internally."""
@@ -2607,8 +2652,11 @@ def _shared_region_block(block, *args):
     and discard the aliasing return here — leaving the shared ``StandardGQABlock``
     contract untouched for eager adapters (olmo, granite_vision_mm,
     mistral3_vision_mm).
+
+    Dispatches to ``region_forward``, not ``forward``: the eager Q/K/V dim-naming
+    in ``forward`` would graph-break this region. See ``region_forward``.
     """
-    h, _key_cache, _value_cache = block.forward(*args)
+    h, _key_cache, _value_cache = block.region_forward(*args)
     return h
 
 

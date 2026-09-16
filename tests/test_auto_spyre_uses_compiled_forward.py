@@ -3,6 +3,7 @@
 Tests the free helper _resolve_run_forward_fn(model, module_run_forward) that the
 model_generate closure will use to choose the forward callable.
 """
+
 import types
 
 
@@ -33,7 +34,6 @@ def test_resolve_prefers_compiled_forward_and_host_gathers_freqs():
     # host-gather freqs via model._spyre_rope, and pass freqs (not position_ids)
     # to the compiled forward.
     out = fn(model, "ids", "pos", "mask", [], [], 0)
-
 
     assert out == "logits"
     assert len(rope_calls) == 1, "host RoPE gather must run exactly once"

@@ -1,4 +1,5 @@
 """prepare_for_spyre must attach a compiled whole-forward callable and region blocks."""
+
 import types
 
 
@@ -17,7 +18,9 @@ def test_prepare_attaches_compiled_run_forward(monkeypatch):
         return fn
 
     # Stub the heavy prep pieces so this stays a CPU wiring test.
-    monkeypatch.setattr(g, "prepare_standard_gqa_region_blocks", fake_region_blocks, raising=False)
+    monkeypatch.setattr(
+        g, "prepare_standard_gqa_region_blocks", fake_region_blocks, raising=False
+    )
     monkeypatch.setattr(g, "prepare_rope_and_heads", lambda m: None, raising=False)
     monkeypatch.setattr(g, "pad_lm_head", lambda m: None, raising=False)
     monkeypatch.setattr(g.torch, "compile", fake_compile, raising=False)
@@ -28,7 +31,7 @@ def test_prepare_attaches_compiled_run_forward(monkeypatch):
     backbone = types.SimpleNamespace(layers=[object(), object()], norm=object())
     monkeypatch.setattr(g, "get_backbone", lambda m: backbone, raising=False)
 
-    g.prepare_for_spyre(model)
+    g.prepare_for_spyre(model, hier_compile=True)
 
     assert created.get("region_blocks") is True
     assert created.get("compiled") is True
@@ -54,8 +57,6 @@ def test_compiled_forward_consumes_freqs_not_position_ids(monkeypatch):
     monkeypatch.setattr(g.torch, "compile", fake_compile, raising=False)
 
     # Stub the backbone/head/norm so _run_forward_freqs runs on plain Python objects.
-    embed_calls = {}
-
     def embed_tokens(input_ids):
         return input_ids  # identity — h just flows through
 
@@ -65,7 +66,12 @@ def test_compiled_forward_consumes_freqs_not_position_ids(monkeypatch):
         norm=lambda h: h,
     )
     monkeypatch.setattr(g, "get_backbone", lambda m: backbone, raising=False)
-    monkeypatch.setattr(g, "text_config", lambda cfg: types.SimpleNamespace(logits_scaling=1), raising=False)
+    monkeypatch.setattr(
+        g,
+        "text_config",
+        lambda cfg: types.SimpleNamespace(logits_scaling=1),
+        raising=False,
+    )
 
     def rope_should_not_be_called(*a, **k):
         raise AssertionError("model._spyre_rope was called INSIDE the compiled forward")
@@ -102,8 +108,12 @@ def test_compiled_forward_consumes_freqs_not_position_ids(monkeypatch):
     key_caches = [None]
     value_caches = [None]
     compiled(
-        "ids", sentinel_freqs, "mask",
-        key_caches, value_caches, 0,
+        "ids",
+        sentinel_freqs,
+        "mask",
+        key_caches,
+        value_caches,
+        0,
     )
     assert seen_block_freqs["freqs"] is sentinel_freqs
 
@@ -119,7 +129,12 @@ def test_eager_run_forward_host_gathers_freqs_once(monkeypatch):
         norm=lambda h: h,
     )
     monkeypatch.setattr(g, "get_backbone", lambda m: backbone, raising=False)
-    monkeypatch.setattr(g, "text_config", lambda cfg: types.SimpleNamespace(logits_scaling=1), raising=False)
+    monkeypatch.setattr(
+        g,
+        "text_config",
+        lambda cfg: types.SimpleNamespace(logits_scaling=1),
+        raising=False,
+    )
 
     rope_calls = []
 
@@ -145,8 +160,13 @@ def test_eager_run_forward_host_gathers_freqs_once(monkeypatch):
     key_caches = [None]
     value_caches = [None]
     g._run_forward(
-        model, "ids", "posids", "mask",
-        key_caches, value_caches, 0,
+        model,
+        "ids",
+        "posids",
+        "mask",
+        key_caches,
+        value_caches,
+        0,
     )
 
     assert len(rope_calls) == 1, "host RoPE gather must run exactly once"

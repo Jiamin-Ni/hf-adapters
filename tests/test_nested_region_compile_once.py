@@ -11,9 +11,10 @@ per-layer state the region *closes over* is frozen at layer 0. The block must
 therefore be passed as an ARGUMENT to the region (not a closure cell), or every
 layer silently runs with layer 0's weights.
 """
+
 import torch
-from torch import nn
 import torch._dynamo as dynamo
+from torch import nn
 
 
 class _Block(nn.Module):
@@ -21,9 +22,10 @@ class _Block(nn.Module):
         super().__init__()
         self.lin = nn.Linear(dim, dim, bias=False)
 
-    def forward(self, h, kc, vc):
+    def region_forward(self, h, kc, vc):
         # Return the (h, kc, vc) triple that nested_region_block expects; the
-        # wrapper drops kc/vc and exposes only h.
+        # wrapper drops kc/vc and exposes only h. Named region_forward because
+        # that is the StandardGQABlock method the shared region dispatches to.
         return self.lin(h).relu(), kc, vc
 
 
@@ -62,8 +64,6 @@ def test_region_block_compiles_once_across_layers():
     # The N region calls must lower to invoke_subgraph, sharing one subgraph.
     gm, _ = dynamo.export(outer)(h)
     calls = [
-        n
-        for n in gm.graph.nodes
-        if "invoke_subgraph" in str(getattr(n, "target", ""))
+        n for n in gm.graph.nodes if "invoke_subgraph" in str(getattr(n, "target", ""))
     ]
     assert len(calls) >= 2, f"expected repeated invoke_subgraph calls, got {calls}"
