@@ -36,6 +36,7 @@ from hf_adapters.hf_common import (
     prepare_rope_and_heads,
     prepare_standard_gqa_blocks,
     prepare_standard_gqa_region_blocks,
+    run_lm_head,
     text_config,
 )
 
