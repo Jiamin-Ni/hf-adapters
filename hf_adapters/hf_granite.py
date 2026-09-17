@@ -32,7 +32,7 @@ import torch
 from hf_adapters.hf_common import (
     _SDPA_MAX_SEQUENCE_TILE_SIZE,
     get_backbone,
-    pad_lm_head,
+    prepare_lm_head_for_spyre,
     prepare_rope_and_heads,
     prepare_standard_gqa_blocks,
     prepare_standard_gqa_region_blocks,
@@ -103,8 +103,7 @@ def _run_forward_freqs(
         value_caches,
         cache_index,
     )
-    logits = model.lm_head(h)
-    return logits / text_config(model.config).logits_scaling
+    return run_lm_head(model, h)
 
 
 def _run_forward(
@@ -185,7 +184,10 @@ def prepare_for_spyre(model, *, hier_compile: bool = False):
     ``prepare_for_spyre`` signature every other adapter carries.
     """
     prepare_rope_and_heads(model)
-    pad_lm_head(model)
+    logits_scaling = text_config(model.config).logits_scaling
+    prepare_lm_head_for_spyre(
+        model, logits_processor=lambda logits: logits / logits_scaling
+    )
     backbone = get_backbone(model)
     if hier_compile:
         model._spyre_compiled_blocks = prepare_standard_gqa_region_blocks(
