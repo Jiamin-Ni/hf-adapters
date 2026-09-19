@@ -34,7 +34,7 @@ from hf_adapters.hf_common import (
     get_backbone,
     prepare_lm_head_for_spyre,
     prepare_rope_and_heads,
-    prepare_standard_gqa_blocks,
+    prepare_standard_gqa_h_only_blocks,
     prepare_standard_gqa_region_blocks,
     run_lm_head,
     text_config,
@@ -63,11 +63,12 @@ def _run_backbone_forward(
     h = h * backbone.embedding_multiplier
 
     for i, compiled_block in enumerate(model._spyre_compiled_blocks):
-        # Each region block (see nested_region_block) updates key_caches[i]/
-        # value_caches[i] IN PLACE and returns only ``h`` — the region wrapper
-        # deliberately drops the cache buffers, since the surrounding
-        # whole-forward compile turns each block into an ``invoke_subgraph`` HOP
-        # call that rejects a subgraph output aliasing a subgraph input.
+        # Blocks on BOTH paths update key_caches[i]/value_caches[i] IN PLACE and
+        # return only ``h``: the whole-forward compile turns a region block into
+        # an ``invoke_subgraph`` HOP call that rejects a subgraph output aliasing
+        # a subgraph input, so the cache buffers cannot be returned there. The
+        # eager path matches that shape via prepare_standard_gqa_h_only_blocks
+        # (not the raw 3-tuple StandardGQABlock) so this driver stays shared.
         h = compiled_block(
             h,
             selected_freqs,
@@ -173,8 +174,9 @@ def prepare_for_spyre(model, *, hier_compile: bool = False):
     Args:
         model: The HF Granite model to adapt (mutated in place).
         hier_compile: EXPERIMENTAL, opt-in. When False (the default), each
-            decoder layer is compiled separately (``prepare_standard_gqa_blocks``)
-            and generation runs through the eager ``_run_forward`` — the
+            decoder layer is compiled separately
+            (``prepare_standard_gqa_h_only_blocks``) and generation runs through
+            the eager ``_run_forward`` — the
             long-standing behavior every Spyre suite exercises today. When True,
             the layers become ``nested_compile_region`` blocks inside ONE
             ``torch.compile``d whole-forward (``_spyre_run_forward``), so the
@@ -195,7 +197,10 @@ def prepare_for_spyre(model, *, hier_compile: bool = False):
             backbone.layers, True
         )
     else:
-        model._spyre_compiled_blocks = prepare_standard_gqa_blocks(
+        # h-only (not the raw 3-tuple blocks): _run_backbone_forward is shared
+        # with the hier path, where nested_compile_region forces a single-value
+        # block return. Caches are mutated in place either way.
+        model._spyre_compiled_blocks = prepare_standard_gqa_h_only_blocks(
             backbone.layers, True
         )
     model._spyre_compiled_norm = torch.compile(backbone.norm, dynamic=False)
