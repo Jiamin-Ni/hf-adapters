@@ -34,7 +34,7 @@ from hf_adapters.hf_common import (
     get_backbone,
     prepare_lm_head_for_spyre,
     prepare_rope_and_heads,
-    prepare_standard_gqa_h_only_blocks,
+    prepare_standard_gqa_blocks,
     prepare_standard_gqa_region_blocks,
     run_lm_head,
     text_config,
@@ -63,13 +63,7 @@ def _run_backbone_forward(
     h = h * backbone.embedding_multiplier
 
     for i, compiled_block in enumerate(model._spyre_compiled_blocks):
-        # Blocks on BOTH paths update key_caches[i]/value_caches[i] IN PLACE and
-        # return only ``h``: the whole-forward compile turns a region block into
-        # an ``invoke_subgraph`` HOP call that rejects a subgraph output aliasing
-        # a subgraph input, so the cache buffers cannot be returned there. The
-        # eager path matches that shape via prepare_standard_gqa_h_only_blocks
-        # (not the raw 3-tuple StandardGQABlock) so this driver stays shared.
-        h = compiled_block(
+        out = compiled_block(
             h,
             selected_freqs,
             attn_mask,
@@ -77,6 +71,21 @@ def _run_backbone_forward(
             value_caches[i],
             cache_index,
         )
+        # Accept both block return shapes, because this driver is shared by both
+        # compile paths (and by hf_granite_vision / hf_granitemoehybrid /
+        # hf_granite_swa, which alias it):
+        #   - region blocks (hier path) return ONLY ``h`` — the whole-forward
+        #     compile turns each into an ``invoke_subgraph`` HOP call, which
+        #     rejects a subgraph output aliasing a subgraph input, so the KV
+        #     buffers cannot be returned;
+        #   - eager per-layer blocks return ``(h, key_cache, value_cache)``.
+        # Either way the caches are mutated IN PLACE (kv_cache_update slice
+        # assignment), so discarding the returned buffers loses nothing.
+        #
+        # TEMPORARY: this tolerance exists only while both paths coexist. Once
+        # hier_compile becomes the default and the eager path is retired, drop
+        # the isinstance check and bind ``h`` directly.
+        h = out[0] if isinstance(out, tuple) else out
 
     h = model._spyre_compiled_norm(h)
     return h
@@ -174,9 +183,8 @@ def prepare_for_spyre(model, *, hier_compile: bool = False):
     Args:
         model: The HF Granite model to adapt (mutated in place).
         hier_compile: EXPERIMENTAL, opt-in. When False (the default), each
-            decoder layer is compiled separately
-            (``prepare_standard_gqa_h_only_blocks``) and generation runs through
-            the eager ``_run_forward`` — the
+            decoder layer is compiled separately (``prepare_standard_gqa_blocks``)
+            and generation runs through the eager ``_run_forward`` — the
             long-standing behavior every Spyre suite exercises today. When True,
             the layers become ``nested_compile_region`` blocks inside ONE
             ``torch.compile``d whole-forward (``_spyre_run_forward``), so the
@@ -197,10 +205,7 @@ def prepare_for_spyre(model, *, hier_compile: bool = False):
             backbone.layers, True
         )
     else:
-        # h-only (not the raw 3-tuple blocks): _run_backbone_forward is shared
-        # with the hier path, where nested_compile_region forces a single-value
-        # block return. Caches are mutated in place either way.
-        model._spyre_compiled_blocks = prepare_standard_gqa_h_only_blocks(
+        model._spyre_compiled_blocks = prepare_standard_gqa_blocks(
             backbone.layers, True
         )
     model._spyre_compiled_norm = torch.compile(backbone.norm, dynamic=False)

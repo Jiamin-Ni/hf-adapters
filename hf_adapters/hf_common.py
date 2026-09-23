@@ -3076,39 +3076,6 @@ def nested_region_block(block):
     return call
 
 
-def h_only_block(block):
-    """Return a per-layer callable exposing only ``h``, for eager drivers.
-
-    The eager twin of ``nested_region_block``: same single-value return, no
-    compile region. ``StandardGQABlock.forward`` yields the 3-tuple that eager
-    adapters (olmo, granite_vision, granite_vision_mm, mistral3_vision_mm,
-    ``standard_gqa_backbone_forward``) unpack, but a driver shared with the
-    whole-forward path needs ONE return shape across both. The caches are
-    mutated in place, so dropping the returned buffers loses nothing.
-
-    Prefer this over having the driver sniff the return type: the shape is then
-    fixed where the blocks are built, not re-derived on every layer.
-    """
-
-    def call(*args, **kwargs):
-        h, _key_cache, _value_cache = block(*args, **kwargs)
-        return h
-
-    return call
-
-
-def prepare_standard_gqa_h_only_blocks(layers, is_res_mul: bool | None = None):
-    """``prepare_standard_gqa_blocks``, with each block narrowed to ``h`` only.
-
-    For adapters whose backbone driver is shared between the per-layer-compile
-    path and the whole-forward path (Granite 3.3), so both see the single-value
-    block contract that ``nested_compile_region`` forces on the latter.
-    """
-    return [
-        h_only_block(block) for block in prepare_standard_gqa_blocks(layers, is_res_mul)
-    ]
-
-
 def prepare_standard_gqa_region_blocks(layers, is_res_mul=None):
     """Register decoder layers as Spyre blocks and wrap each in a compile region.
 
