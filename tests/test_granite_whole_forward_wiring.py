@@ -31,7 +31,7 @@ def test_prepare_attaches_compiled_run_forward(monkeypatch):
     backbone = types.SimpleNamespace(layers=[object(), object()], norm=object())
     monkeypatch.setattr(g, "get_backbone", lambda m: backbone, raising=False)
 
-    g.prepare_for_spyre(model, hier_compile=True)
+    g.prepare_for_spyre(model)
 
     assert created.get("region_blocks") is True
     assert created.get("compiled") is True

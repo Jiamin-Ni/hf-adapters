@@ -11,9 +11,8 @@ def test_nested_region_block_drops_cache_return():
     from hf_adapters.hf_common import nested_region_block
 
     class Dummy(nn.Module):
-        # The region dispatches to region_forward (StandardGQABlock's
-        # dim-naming-free sibling of forward), so the fake must provide it.
-        def region_forward(self, h, freqs, mask, kc, vc, cache_index):
+        # The region dispatches to forward, so the fake must provide it.
+        def forward(self, h, freqs, mask, kc, vc, cache_index):
             return h + 1.0, kc, vc
 
     wrapped = nested_region_block(Dummy())
@@ -34,7 +33,7 @@ def test_nested_region_block_is_callable_region():
     from hf_adapters.hf_common import nested_region_block
 
     class Dummy(nn.Module):
-        def region_forward(self, h):
+        def forward(self, h):
             return h, None, None
 
     wrapped = nested_region_block(Dummy())

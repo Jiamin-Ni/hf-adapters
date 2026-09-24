@@ -14,9 +14,9 @@ def test_region_wrapper_returns_only_h_and_mutates_kv_in_place():
     calls = {}
 
     class FakeBlock:
-        # Mimics StandardGQABlock.region_forward (the method the region
-        # dispatches to): mutates the caches in place, returns a 3-tuple.
-        def region_forward(self, h, selected_freqs, attn_mask, kc, vc, cache_index):
+        # Mimics StandardGQABlock.forward (the method the region dispatches
+        # to): mutates the caches in place, returns a 3-tuple.
+        def forward(self, h, selected_freqs, attn_mask, kc, vc, cache_index):
             calls["kc_id"] = id(kc)
             calls["vc_id"] = id(vc)
             kc["written"] = True  # in-place mutation of the passed buffer

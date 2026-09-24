@@ -34,7 +34,6 @@ from hf_adapters.hf_common import (
     get_backbone,
     prepare_lm_head_for_spyre,
     prepare_rope_and_heads,
-    prepare_standard_gqa_blocks,
     prepare_standard_gqa_region_blocks,
     run_lm_head,
     text_config,
@@ -74,17 +73,14 @@ def _run_backbone_forward(
         # Accept both block return shapes, because this driver is shared by both
         # compile paths (and by hf_granite_vision / hf_granitemoehybrid /
         # hf_granite_swa, which alias it):
-        #   - region blocks (hier path) return ONLY ``h`` — the whole-forward
-        #     compile turns each into an ``invoke_subgraph`` HOP call, which
-        #     rejects a subgraph output aliasing a subgraph input, so the KV
-        #     buffers cannot be returned;
-        #   - eager per-layer blocks return ``(h, key_cache, value_cache)``.
+        #   - region blocks (this adapter, always) return ONLY ``h`` — the
+        #     whole-forward compile turns each into an ``invoke_subgraph`` HOP
+        #     call, which rejects a subgraph output aliasing a subgraph input,
+        #     so the KV buffers cannot be returned;
+        #   - eager per-layer blocks (the other adapters above) return
+        #     ``(h, key_cache, value_cache)``.
         # Either way the caches are mutated IN PLACE (kv_cache_update slice
         # assignment), so discarding the returned buffers loses nothing.
-        #
-        # TEMPORARY: this tolerance exists only while both paths coexist. Once
-        # hier_compile becomes the default and the eager path is retired, drop
-        # the isinstance check and bind ``h`` directly.
         h = out[0] if isinstance(out, tuple) else out
 
     h = model._spyre_compiled_norm(h)
@@ -177,22 +173,13 @@ def _make_compiled_run_forward(model):
     return torch.compile(_bound, dynamic=False)
 
 
-def prepare_for_spyre(model, *, hier_compile: bool = False):
+def prepare_for_spyre(model):
     """Apply Spyre adaptations to Granite 3.3 model in-place.
 
-    Args:
-        model: The HF Granite model to adapt (mutated in place).
-        hier_compile: EXPERIMENTAL, opt-in. When False (the default), each
-            decoder layer is compiled separately (``prepare_standard_gqa_blocks``)
-            and generation runs through the eager ``_run_forward`` — the
-            long-standing behavior every Spyre suite exercises today. When True,
-            the layers become ``nested_compile_region`` blocks inside ONE
-            ``torch.compile``d whole-forward (``_spyre_run_forward``), so the
-            shared region is traced once and reused across all N layers instead
-            of paying a separate compile per layer.
-
-    Keyword-only so it can never be confused with the ``(model)``-only
-    ``prepare_for_spyre`` signature every other adapter carries.
+    Decoder layers become ``nested_compile_region`` blocks inside ONE
+    ``torch.compile``d whole-forward (``_spyre_run_forward``), so the shared
+    region is traced once and reused across all N layers instead of paying a
+    separate compile per layer.
     """
     prepare_rope_and_heads(model)
     logits_scaling = text_config(model.config).logits_scaling
@@ -200,19 +187,12 @@ def prepare_for_spyre(model, *, hier_compile: bool = False):
         model, logits_processor=lambda logits: logits / logits_scaling
     )
     backbone = get_backbone(model)
-    if hier_compile:
-        model._spyre_compiled_blocks = prepare_standard_gqa_region_blocks(
-            backbone.layers, True
-        )
-    else:
-        model._spyre_compiled_blocks = prepare_standard_gqa_blocks(
-            backbone.layers, True
-        )
+    model._spyre_compiled_blocks = prepare_standard_gqa_region_blocks(
+        backbone.layers, True
+    )
+    # Redundant (but harmless) under _spyre_run_forward: Dynamo inlines this
+    # already-compiled callable into the outer whole-forward graph rather than
+    # preserving it as its own boundary.
     model._spyre_compiled_norm = torch.compile(backbone.norm, dynamic=False)
     model._spyre_prefill_chunk_size = _SDPA_MAX_SEQUENCE_TILE_SIZE
-    # Only the hierarchical path attaches a compiled whole-forward. Leaving the
-    # attribute unset on the default path is what keeps
-    # ``auto_spyre_model._resolve_run_forward_fn`` inert (it falls back to the
-    # eager ``_run_forward``), so default-path behavior is unchanged.
-    if hier_compile:
-        model._spyre_run_forward = _make_compiled_run_forward(model)
+    model._spyre_run_forward = _make_compiled_run_forward(model)

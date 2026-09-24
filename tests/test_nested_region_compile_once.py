@@ -22,10 +22,9 @@ class _Block(nn.Module):
         super().__init__()
         self.lin = nn.Linear(dim, dim, bias=False)
 
-    def region_forward(self, h, kc, vc):
+    def forward(self, h, kc, vc):
         # Return the (h, kc, vc) triple that nested_region_block expects; the
-        # wrapper drops kc/vc and exposes only h. Named region_forward because
-        # that is the StandardGQABlock method the shared region dispatches to.
+        # wrapper drops kc/vc and exposes only h.
         return self.lin(h).relu(), kc, vc
 
 
